@@ -175,7 +175,8 @@ export default function EditPositionsClient() {
         .select('id,gene_id,sex,age_min,age_max,recommendations,created_at,applies_to_all_classes')
         .order('created_at', { ascending: false })
       if (rg.error) throw rg.error
-      setGroups(rg.data ?? [])
+      const uniqueGroups = Array.from(new Map((rg.data ?? []).map((row) => [row.id, row])).values())
+      setGroups(uniqueGroups)
 
       const gl = await supabase.from('recommendation_group_classes').select('group_id,class_id,created_at')
       if (gl.error) throw gl.error
@@ -904,202 +905,178 @@ export default function EditPositionsClient() {
                             </div>
 
                             {/* Groups */}
-                            <div className="rounded-2xl border p-4">
-                              <h4 className="font-semibold">Recommendation groups</h4>
+                              <div className="rounded-2xl border p-4">
+                                <h4 className="font-semibold">Recommendation groups</h4>
 
-                              {geneGroups.length === 0 ? (
-                                <p className="opacity-70 mt-2 text-sm">No recommendation groups yet for this gene.</p>
-                              ) : (
-                                <div className="mt-3 space-y-3">
-                                  {geneGroups.map((gr) => {
-                                    const d = groupDraft[gr.id]
-                                    const picked = groupClassPick[gr.id] ?? {}
-                                    const appliesAll = !!d?.appliesAll
+                                {geneGroups.length === 0 ? (
+                                  <p className="opacity-70 mt-2 text-sm">No recommendation groups yet for this gene.</p>
+                                ) : (
+                                  <div className="mt-3 space-y-3">
+                                    {geneGroups.map((gr) => {
+                                      const d = groupDraft[gr.id]
+                                      const picked = groupClassPick[gr.id] ?? {}
+                                      const appliesAll = !!d?.appliesAll
 
-                                    const effectiveClassNames = appliesAll
-                                      ? geneClasses.map((c) => c.name)
-                                      : geneClasses.filter((c) => !!picked[c.id]).map((c) => c.name)
+                                      const effectiveClassNames = appliesAll
+                                        ? geneClasses.map((c) => c.name)
+                                        : geneClasses.filter((c) => !!picked[c.id]).map((c) => c.name)
 
-                                    return (
-                                      <div
-                                        key={gr.id}
-                                        className="rounded-2xl border p-4 space-y-3"
-                                        onMouseEnter={() => initGroupDraft(gr)}
-                                      >
-                                      <div className="rounded-2xl border p-4">
-                                          <h4 className="font-semibold">Recommendation groups</h4>
-
-                                          {geneGroups.length === 0 ? (
-                                              <p className="opacity-70 mt-2 text-sm">No recommendation groups yet for this gene.</p>
-                                          ) : (
-                                              <div className="mt-3 space-y-3">
-                                              {geneGroups.map((gr) => {
-                                                  const d = groupDraft[gr.id]
-                                                  const picked = groupClassPick[gr.id] ?? {}
-                                                  const appliesAll = !!d?.appliesAll
-
-                                                  const effectiveClassNames = appliesAll
-                                                  ? geneClasses.map((c) => c.name)
-                                                  : geneClasses.filter((c) => !!picked[c.id]).map((c) => c.name)
-
-                                                  return (
-                                                  <div
-                                                      key={gr.id}
-                                                      className="rounded-2xl border p-4 space-y-3"
-                                                      onMouseEnter={() => initGroupDraft(gr)}
-                                                  >
-                                                      <div className="flex items-start justify-between gap-3">
-                                                      <div className="text-sm opacity-80">
-                                                          <div>
-                                                          <span className="font-semibold">Sex:</span> {sexLabel(gr.sex)} ·{' '}
-                                                          <span className="font-semibold">Age:</span> {prettyAge(gr.age_min, gr.age_max)}
-                                                          </div>
-                                                          <div className="mt-1">
-                                                          <span className="font-semibold">Classes:</span>{' '}
-                                                          {appliesAll ? 'ALL (including future)' : effectiveClassNames.length ? effectiveClassNames.join(', ') : '—'}
-                                                          </div>
-                                                      </div>
-
-                                                      <button
-                                                          className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delgroup:${gr.id}`])}
-                                                          onClick={() => deleteGroup(gr.id)}
-                                                          disabled={!!busy[`delgroup:${gr.id}`]}
-                                                      >
-                                                          {busy[`delgroup:${gr.id}`] ? 'Deleting…' : 'Delete group'}
-                                                      </button>
-                                                      </div>
-
-                                                      <div className="grid gap-3 md:grid-cols-4">
-                                                      <div className="space-y-1">
-                                                          <label className="text-sm">Sex</label>
-                                                          <select
-                                                          className="w-full rounded-xl border p-3 bg-black text-white"
-                                                          value={d?.sexUI ?? 'ANY'}
-                                                          onChange={(e) =>
-                                                              setGroupDraft((p) => ({
-                                                              ...p,
-                                                              [gr.id]: { ...(p[gr.id] as any), sexUI: e.target.value as any },
-                                                              }))
-                                                          }
-                                                          >
-                                                          <option value="ANY">ANY</option>
-                                                          <option value="M">M</option>
-                                                          <option value="F">F</option>
-                                                          </select>
-                                                      </div>
-
-                                                      <div className="space-y-1">
-                                                          <label className="text-sm">Age min</label>
-                                                          <input
-                                                          className="w-full rounded-xl border p-3 bg-black text-white"
-                                                          placeholder="blank = any"
-                                                          value={d?.ageMin ?? ''}
-                                                          onChange={(e) =>
-                                                              setGroupDraft((p) => ({
-                                                              ...p,
-                                                              [gr.id]: { ...(p[gr.id] as any), ageMin: e.target.value },
-                                                              }))
-                                                          }
-                                                          />
-                                                      </div>
-
-                                                      <div className="space-y-1">
-                                                          <label className="text-sm">Age max</label>
-                                                          <input
-                                                          className="w-full rounded-xl border p-3 bg-black text-white"
-                                                          placeholder="blank = any"
-                                                          value={d?.ageMax ?? ''}
-                                                          onChange={(e) =>
-                                                              setGroupDraft((p) => ({
-                                                              ...p,
-                                                              [gr.id]: { ...(p[gr.id] as any), ageMax: e.target.value },
-                                                              }))
-                                                          }
-                                                          />
-                                                      </div>
-
-                                                      <div className="space-y-1">
-                                                          <label className="text-sm">Applies to all classes</label>
-                                                          <button
-                                                          className={btn(
-                                                              `w-full rounded-xl border px-4 py-3 text-left ${
-                                                              appliesAll ? 'bg-white text-black' : 'bg-black text-white'
-                                                              }`,
-                                                              false
-                                                          )}
-                                                          type="button"
-                                                          onClick={() =>
-                                                              setGroupDraft((p) => ({
-                                                              ...p,
-                                                              [gr.id]: { ...(p[gr.id] as any), appliesAll: !appliesAll },
-                                                              }))
-                                                          }
-                                                          >
-                                                          {appliesAll ? 'Yes (all, including future)' : 'No (choose classes below)'}
-                                                          </button>
-                                                      </div>
-                                                      </div>
-
-                                                      {!appliesAll && (
-                                                      <div className="rounded-xl border p-3">
-                                                          <div className="text-sm font-semibold mb-2">Assigned classes</div>
-                                                          {geneClasses.length === 0 ? (
-                                                          <div className="text-sm opacity-70">No classes exist for this gene yet.</div>
-                                                          ) : (
-                                                          <div className="grid gap-2 md:grid-cols-2">
-                                                              {geneClasses.map((c) => (
-                                                              <label key={c.id} className="flex items-center gap-2 rounded-lg border p-2">
-                                                                  <input
-                                                                  type="checkbox"
-                                                                  checked={!!picked[c.id]}
-                                                                  onChange={(e) =>
-                                                                      setGroupClassPick((p) => ({
-                                                                      ...p,
-                                                                      [gr.id]: { ...(p[gr.id] ?? {}), [c.id]: e.target.checked },
-                                                                      }))
-                                                                  }
-                                                                  />
-                                                                  <span>{c.name}</span>
-                                                              </label>
-                                                              ))}
-                                                          </div>
-                                                          )}
-                                                      </div>
-                                                      )}
-
-                                                      <div className="space-y-1">
-                                                      <label className="text-sm">Recommendations</label>
-                                                      <textarea
-                                                          className="w-full rounded-xl border p-3 min-h-[120px] bg-black text-white"
-                                                          value={d?.recs ?? gr.recommendations ?? ''}
-                                                          onChange={(e) =>
-                                                          setGroupDraft((p) => ({
-                                                              ...p,
-                                                              [gr.id]: { ...(p[gr.id] as any), recs: e.target.value },
-                                                          }))
-                                                          }
-                                                      />
-                                                      </div>
-
-                                                      <button
-                                                      className={btn('rounded-xl border px-4 py-3', busy[`group:${gr.id}`])}
-                                                      onClick={() => saveGroup(gr)}
-                                                      disabled={!!busy[`group:${gr.id}`]}
-                                                      >
-                                                      {busy[`group:${gr.id}`] ? 'Saving…' : 'Save group'}
-                                                      </button>
-                                                  </div>
-                                                  )
-                                              })}
+                                      return (
+                                        <div
+                                          key={gr.id}
+                                          className="rounded-2xl border p-4 space-y-3"
+                                          onMouseEnter={() => initGroupDraft(gr)}
+                                        >
+                                          <div className="flex items-start justify-between gap-3">
+                                            <div className="text-sm opacity-80">
+                                              <div>
+                                                <span className="font-semibold">Sex:</span> {sexLabel(gr.sex)} ·{' '}
+                                                <span className="font-semibold">Age:</span> {prettyAge(gr.age_min, gr.age_max)}
                                               </div>
-                                          )}
+                                              <div className="mt-1">
+                                                <span className="font-semibold">Classes:</span>{' '}
+                                                {appliesAll
+                                                  ? 'ALL (including future)'
+                                                  : effectiveClassNames.length
+                                                    ? effectiveClassNames.join(', ')
+                                                    : '—'}
+                                              </div>
+                                            </div>
+
+                                            <button
+                                              className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delgroup:${gr.id}`])}
+                                              onClick={() => deleteGroup(gr.id)}
+                                              disabled={!!busy[`delgroup:${gr.id}`]}
+                                            >
+                                              {busy[`delgroup:${gr.id}`] ? 'Deleting…' : 'Delete group'}
+                                            </button>
                                           </div>
-                                      </div>
-                                    )
-                                  })}
-                                </div>
-                              )}
-                            </div>
+
+                                          <div className="grid gap-3 md:grid-cols-4">
+                                            <div className="space-y-1">
+                                              <label className="text-sm">Sex</label>
+                                              <select
+                                                className="w-full rounded-xl border p-3 bg-black text-white"
+                                                value={d?.sexUI ?? 'ANY'}
+                                                onChange={(e) =>
+                                                  setGroupDraft((p) => ({
+                                                    ...p,
+                                                    [gr.id]: { ...(p[gr.id] as any), sexUI: e.target.value as any },
+                                                  }))
+                                                }
+                                              >
+                                                <option value="ANY">ANY</option>
+                                                <option value="M">M</option>
+                                                <option value="F">F</option>
+                                              </select>
+                                            </div>
+
+                                            <div className="space-y-1">
+                                              <label className="text-sm">Age min</label>
+                                              <input
+                                                className="w-full rounded-xl border p-3 bg-black text-white"
+                                                placeholder="blank = any"
+                                                value={d?.ageMin ?? ''}
+                                                onChange={(e) =>
+                                                  setGroupDraft((p) => ({
+                                                    ...p,
+                                                    [gr.id]: { ...(p[gr.id] as any), ageMin: e.target.value },
+                                                  }))
+                                                }
+                                              />
+                                            </div>
+
+                                            <div className="space-y-1">
+                                              <label className="text-sm">Age max</label>
+                                              <input
+                                                className="w-full rounded-xl border p-3 bg-black text-white"
+                                                placeholder="blank = any"
+                                                value={d?.ageMax ?? ''}
+                                                onChange={(e) =>
+                                                  setGroupDraft((p) => ({
+                                                    ...p,
+                                                    [gr.id]: { ...(p[gr.id] as any), ageMax: e.target.value },
+                                                  }))
+                                                }
+                                              />
+                                            </div>
+
+                                            <div className="space-y-1">
+                                              <label className="text-sm">Applies to all classes</label>
+                                              <button
+                                                className={btn(
+                                                  `w-full rounded-xl border px-4 py-3 text-left ${
+                                                    appliesAll ? 'bg-white text-black' : 'bg-black text-white'
+                                                  }`,
+                                                  false
+                                                )}
+                                                type="button"
+                                                onClick={() =>
+                                                  setGroupDraft((p) => ({
+                                                    ...p,
+                                                    [gr.id]: { ...(p[gr.id] as any), appliesAll: !appliesAll },
+                                                  }))
+                                                }
+                                              >
+                                                {appliesAll ? 'Yes (all, including future)' : 'No (choose classes below)'}
+                                              </button>
+                                            </div>
+                                          </div>
+
+                                          {!appliesAll && (
+                                            <div className="rounded-xl border p-3">
+                                              <div className="text-sm font-semibold mb-2">Assigned classes</div>
+                                              {geneClasses.length === 0 ? (
+                                                <div className="text-sm opacity-70">No classes exist for this gene yet.</div>
+                                              ) : (
+                                                <div className="grid gap-2 md:grid-cols-2">
+                                                  {geneClasses.map((c) => (
+                                                    <label key={c.id} className="flex items-center gap-2 rounded-lg border p-2">
+                                                      <input
+                                                        type="checkbox"
+                                                        checked={!!picked[c.id]}
+                                                        onChange={(e) =>
+                                                          setGroupClassPick((p) => ({
+                                                            ...p,
+                                                            [gr.id]: { ...(p[gr.id] ?? {}), [c.id]: e.target.checked },
+                                                          }))
+                                                        }
+                                                      />
+                                                      <span>{c.name}</span>
+                                                    </label>
+                                                  ))}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+
+                                          <div className="space-y-1">
+                                            <label className="text-sm">Recommendations</label>
+                                            <textarea
+                                              className="w-full rounded-xl border p-3 min-h-[120px] bg-black text-white"
+                                              value={d?.recs ?? gr.recommendations ?? ''}
+                                              onChange={(e) =>
+                                                setGroupDraft((p) => ({
+                                                  ...p,
+                                                  [gr.id]: { ...(p[gr.id] as any), recs: e.target.value },
+                                                }))
+                                              }
+                                            />
+                                          </div>
+
+                                          <button
+                                            className={btn('rounded-xl border px-4 py-3', busy[`group:${gr.id}`])}
+                                            onClick={() => saveGroup(gr)}
+                                            disabled={!!busy[`group:${gr.id}`]}
+                                          >
+                                            {busy[`group:${gr.id}`] ? 'Saving…' : 'Save group'}
+                                          </button>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
                           </div>
                         ) : (
                           <div className="mt-4 space-y-3">
