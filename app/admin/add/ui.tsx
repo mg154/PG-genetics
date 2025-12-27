@@ -93,6 +93,8 @@ export default function AddPositionsClient() {
   const [groupAgeMinStr, setGroupAgeMinStr] = useState('')
   const [groupAgeMaxStr, setGroupAgeMaxStr] = useState('')
   const [groupRecs, setGroupRecs] = useState('')
+  const [isCancerPositive, setIsCancerPositive] = useState(false)
+
 
   // classes for group (multi)
   const [groupAllClasses, setGroupAllClasses] = useState(false)
@@ -387,6 +389,41 @@ export default function AddPositionsClient() {
     }
   }
 
+  async function addCancerPositiveRecommendation() {
+  setError(null)
+  const gene_id = groupGeneId
+  if (!gene_id) return setError('Pick a gene (section 2).')
+
+  const recommendations = groupRecs.trim()
+  if (!recommendations) return setError('Recommendations text is required.')
+
+  const sex = groupSexChoice === 'ANY' ? 'ANY' : (groupSexChoice as 'M' | 'F')
+  const age_min = parseOptionalInt(groupAgeMinStr)
+  const age_max = parseOptionalInt(groupAgeMaxStr)
+
+  setBusyKey('addCancerRec', true)
+  try {
+    const { error } = await supabase.from('gene_cancer_recommendations').insert({
+      gene_id,
+      sex,
+      age_min,
+      age_max,
+      recommendations,
+    } as any)
+    if (error) throw error
+
+    // reset form
+    setGroupSexChoice('ANY')
+    setGroupAgeMinStr('')
+    setGroupAgeMaxStr('')
+    setGroupRecs('')
+  } catch (e: any) {
+    setError(e?.message ?? String(e))
+  } finally {
+    setBusyKey('addCancerRec', false)
+  }
+}
+
   function toggleGroupPick(id: string) {
     setSelectedGroupIds((prev: string[]) => {
       if (prev.includes(id)) return prev.filter((x) => x !== id)
@@ -604,8 +641,24 @@ export default function AddPositionsClient() {
 
       {/* 2) Add recommendation group */}
       <section className="rounded-2xl border p-4 space-y-4">
-        <h2 className="text-lg font-semibold">2) Add a recommendation group</h2>
-
+         <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">2) Add a recommendation</h2>
+            <button
+              type="button"
+              className={clsButton(
+                `rounded-xl border px-3 py-2 text-sm ${isCancerPositive ? 'bg-white text-black' : ''}`,
+                false
+              )}
+              onClick={() => {
+                setIsCancerPositive((v) => !v)
+                // safety reset when switching modes
+                setGroupAllClasses(false)
+                setGroupSelectedClassIds([])
+              }}
+            >
+              Cancer positive
+            </button>
+          </div>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="space-y-1">
             <label className="text-sm">Gene</label>
@@ -657,64 +710,66 @@ export default function AddPositionsClient() {
           </div>
         </div>
 
-        <div className="rounded-xl border p-3 space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold">Recommendation classes (gene-specific)</div>
-              <div className="text-xs opacity-70">Pick multiple classes, or use “applies to all”.</div>
+        {!isCancerPositive && (
+          <div className="rounded-xl border p-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">Recommendation classes (gene-specific)</div>
+                <div className="text-xs opacity-70">Pick multiple classes, or use “applies to all”.</div>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={groupAllClasses} onChange={(e) => setGroupAllClasses(e.target.checked)} />
+                Applies to all classes (including future)
+              </label>
             </div>
 
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={groupAllClasses} onChange={(e) => setGroupAllClasses(e.target.checked)} />
-              Applies to all classes (including future)
-            </label>
+            {!groupAllClasses && (
+              <>
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    className="rounded-xl border px-3 py-2 text-sm active:translate-y-[1px]"
+                    onClick={selectAllClassesForGene}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-xl border px-3 py-2 text-sm active:translate-y-[1px]"
+                    onClick={clearAllClasses}
+                  >
+                    Clear
+                  </button>
+                </div>
+
+                <div className="grid gap-2 md:grid-cols-2">
+                  {classesForGroupGene.map((c) => (
+                    <label key={c.id} className="flex items-center gap-2 rounded-xl border p-2">
+                      <input type="checkbox" checked={groupSelectedClassIds.includes(c.id)} onChange={() => toggleClassPick(c.id)} />
+                      <span className="text-sm">{c.name}</span>
+                    </label>
+                  ))}
+                  {groupGeneId && classesForGroupGene.length === 0 && (
+                    <div className="text-sm opacity-80">No classes for this gene yet. Add one below.</div>
+                  )}
+                </div>
+              </>
+            )}
+
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <input
+                className="w-full rounded-xl border p-3 bg-black text-white"
+                value={newClassName}
+                onChange={(e) => setNewClassName(e.target.value)}
+                placeholder="Type new class name (e.g., typical) and click Add class"
+              />
+              <button className={clsButton('rounded-xl border px-4 py-3', !!busy.addClass)} disabled={!!busy.addClass} onClick={addClassForGene}>
+                {busy.addClass ? 'Adding…' : 'Add class'}
+              </button>
+            </div>
           </div>
-
-          {!groupAllClasses && (
-            <>
-              <div className="flex gap-2 flex-wrap">
-                <button
-                  type="button"
-                  className="rounded-xl border px-3 py-2 text-sm active:translate-y-[1px]"
-                  onClick={selectAllClassesForGene}
-                >
-                  Select all
-                </button>
-                <button
-                  type="button"
-                  className="rounded-xl border px-3 py-2 text-sm active:translate-y-[1px]"
-                  onClick={clearAllClasses}
-                >
-                  Clear
-                </button>
-              </div>
-
-              <div className="grid gap-2 md:grid-cols-2">
-                {classesForGroupGene.map((c) => (
-                  <label key={c.id} className="flex items-center gap-2 rounded-xl border p-2">
-                    <input type="checkbox" checked={groupSelectedClassIds.includes(c.id)} onChange={() => toggleClassPick(c.id)} />
-                    <span className="text-sm">{c.name}</span>
-                  </label>
-                ))}
-                {groupGeneId && classesForGroupGene.length === 0 && (
-                  <div className="text-sm opacity-80">No classes for this gene yet. Add one below.</div>
-                )}
-              </div>
-            </>
-          )}
-
-          <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-            <input
-              className="w-full rounded-xl border p-3 bg-black text-white"
-              value={newClassName}
-              onChange={(e) => setNewClassName(e.target.value)}
-              placeholder="Type new class name (e.g., typical) and click Add class"
-            />
-            <button className={clsButton('rounded-xl border px-4 py-3', !!busy.addClass)} disabled={!!busy.addClass} onClick={addClassForGene}>
-              {busy.addClass ? 'Adding…' : 'Add class'}
-            </button>
-          </div>
-        </div>
+        )}
 
         <div className="space-y-1">
           <label className="text-sm">Recommendations</label>
@@ -726,8 +781,8 @@ export default function AddPositionsClient() {
           />
         </div>
 
-        <button className={clsButton('rounded-xl border px-4 py-3', !!busy.addGroup)} disabled={!!busy.addGroup} onClick={addRecommendationGroup}>
-          {busy.addGroup ? 'Saving…' : 'Add recommendation group'}
+        <button className={clsButton('rounded-xl border px-4 py-3', !!busy.addGroup)} disabled={!!busy.addGroup} onClick={isCancerPositive ? addCancerPositiveRecommendation : addRecommendationGroup}>
+          {busy.addGroup ? 'Saving…' : isCancerPositive ? 'Add cancer-positive recommendations' : 'Add group recommendations'}
         </button>
       </section>
 
