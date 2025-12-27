@@ -16,8 +16,11 @@ export default function AdminNav({
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
 
-  const currentLabel =
-    pathname?.startsWith('/admin/edit') ? 'Edit positions' : 'Add positions'
+  const currentLabel = pathname?.startsWith('/admin/edit')
+    ? 'Edit positions'
+    : pathname?.startsWith('/admin/generator')
+      ? 'Generator'
+      : 'Add positions'
 
   async function logout() {
     await supabase.auth.signOut()
@@ -60,6 +63,13 @@ export default function AdminNav({
                 onClick={() => go('/admin/edit')}
               >
                 2) Edit positions in the database
+              </button>
+
+              <button
+                className="w-full text-left rounded-xl px-3 py-2 hover:opacity-80"
+                onClick={() => go('/admin/generator')}
+              >
+                3) Recommendation generator
               </button>
 
               <div className="my-2 border-t opacity-50" />
