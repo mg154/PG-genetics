@@ -246,11 +246,44 @@ export default function AddPositionsClient() {
 
     setBusyKey('addGene', true)
     try {
-      const { error } = await supabase.from('genes').insert({ symbol, name })
-      if (error) throw error
+      // 1) Insert gene and get its id back
+      const { data: insertedGene, error: insErr } = await supabase
+        .from('genes')
+        .insert({ symbol, name })
+        .select('id')
+        .single()
+
+      if (insErr) throw insErr
+      const newGeneId = insertedGene.id as string
+
+      // 2) Clear the gene form
       setGeneSymbol('')
       setGeneName('')
+
+      // 3) Reload gene list so it appears in the dropdown immediately
       await loadGenes()
+
+      // 4) Auto-select the newly created gene in "Add recommendation group"
+      setGroupGeneId(newGeneId)
+
+      // 5) Immediately fetch its classes (retry a few times because the "typical" class
+      //    may be created by a DB trigger and can appear a moment later in the API)
+      for (let i = 0; i < 6; i++) {
+        const { data: cls, error: clsErr } = await supabase
+          .from('recommendation_classes')
+          .select('id,gene_id,name,created_at')
+          .eq('gene_id', newGeneId)
+          .order('name')
+
+        if (clsErr) throw clsErr
+
+        if ((cls ?? []).length > 0) {
+          setClasses(cls as any)
+          break
+        }
+
+        await new Promise((r) => setTimeout(r, 250))
+      }
     } catch (e: any) {
       setError(e?.message ?? String(e))
     } finally {
@@ -505,15 +538,11 @@ export default function AddPositionsClient() {
 
     setBusyKey('addRisk', true)
     try {
-      const rows =
-        riskSex === 'ANY'
-          ? [
-              { gene_id, sex: 'F', risk },
-              { gene_id, sex: 'M', risk },
-            ]
-          : [{ gene_id, sex: riskSex, risk }]
-  
-      const { error } = await supabase.from('gene_risks').insert(rows as any)
+      const { error } = await supabase.from('gene_risks').insert({
+        gene_id,
+        sex: riskSex, // <-- 'ANY' | 'M' | 'F'
+        risk,
+      } as any)
       if (error) throw error
       setRiskText('')
     } catch (e: any) {

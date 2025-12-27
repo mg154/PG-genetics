@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/utils/supabase/client'
 
 type Sex = 'M' | 'F' | 'ANY'
-type RiskSex = 'M' | 'F' | 'ANY'
 type Pathogenicity = 'pathogenic' | 'likely_pathogenic'
 
 type Gene = { id: string; symbol: string; name: string | null; created_at?: string | null }
@@ -19,8 +18,7 @@ type RecGroup = {
   recommendations: string
   created_at?: string | null
   applies_to_all_classes: boolean
-  // legacy column exists in DB, but we ignore it to avoid ambiguity:
-  class_id?: string | null
+  class_id?: string | null // legacy/ignored
 }
 
 type GroupClassLink = { group_id: string; class_id: string; created_at?: string | null }
@@ -34,13 +32,25 @@ type MutationRow = {
 }
 
 type MutationGroupLink = { mutation_id: string; group_id: string; created_at?: string | null }
+
+// NEW: mutation ↔ class links
 type MutationClassLink = { mutation_id: string; class_id: string; created_at?: string | null }
 
-type RiskRow = { id: string; gene_id: string; sex: RiskSex; risk: string; created_at?: string | null }
+// NEW: overrides
+type OverrideChoice = 'default' | 'include' | 'exclude'
+type MutationGroupOverrideRow = {
+  mutation_id: string
+  group_id: string
+  override: 'include' | 'exclude'
+  created_at?: string | null
+}
+
+type RiskRow = { id: string; gene_id: string; sex: Sex; risk: string; created_at?: string | null }
 
 function sexLabel(s: Sex) {
   return s === 'M' ? 'M' : s === 'F' ? 'F' : 'ANY'
 }
+
 function parseSexFromUI(v: string): Sex {
   if (v === 'M') return 'M'
   if (v === 'F') return 'F'
@@ -60,13 +70,6 @@ function btn(base: string, busy?: boolean) {
   return `${base} transition active:translate-y-[1px] active:opacity-80 ${busy ? 'opacity-60 cursor-not-allowed' : ''}`
 }
 
-function groupMatchesClass(group: RecGroup, classId: string | null, groupClassIds: Map<string, Set<string>>) {
-  if (!classId) return true
-  if (group.applies_to_all_classes) return true
-  const ids = groupClassIds.get(group.id) ?? new Set<string>()
-  return ids.has(classId)
-}
-
 export default function EditPositionsClient() {
   const supabase = useMemo(() => createClient(), [])
 
@@ -80,12 +83,15 @@ export default function EditPositionsClient() {
   const [groupClassLinks, setGroupClassLinks] = useState<GroupClassLink[]>([])
   const [mutations, setMutations] = useState<MutationRow[]>([])
   const [mutationLinks, setMutationLinks] = useState<MutationGroupLink[]>([])
+
+  // NEW:
   const [mutationClassLinks, setMutationClassLinks] = useState<MutationClassLink[]>([])
+  const [mutationOverrides, setMutationOverrides] = useState<MutationGroupOverrideRow[]>([])
+
   const [risks, setRisks] = useState<RiskRow[]>([])
 
   // drafts keyed by id
   const [geneDraft, setGeneDraft] = useState<Record<string, { symbol: string; name: string }>>({})
-  const [classDraft, setClassDraft] = useState<Record<string, { name: string }>>({})
   const [groupDraft, setGroupDraft] = useState<
     Record<
       string,
@@ -99,40 +105,31 @@ export default function EditPositionsClient() {
     >
   >({})
   const [groupClassPick, setGroupClassPick] = useState<Record<string, Record<string, boolean>>>({})
-  const [mutationDraft, setMutationDraft] = useState<Record<string, { mutation: string; pathogenicity: Pathogenicity }>>({})
+
+  const [mutationDraft, setMutationDraft] = useState<Record<string, { mutation: string; pathogenicity: Pathogenicity }>>(
+    {}
+  )
   const [mutationGroupPick, setMutationGroupPick] = useState<Record<string, Record<string, boolean>>>({})
+
+  // NEW: mutation class pick + overrides pick
   const [mutationClassPick, setMutationClassPick] = useState<Record<string, Record<string, boolean>>>({})
-  const [riskDraft, setRiskDraft] = useState<Record<string, { sex: RiskSex; risk: string }>>({})
+  const [mutationOverridePick, setMutationOverridePick] = useState<Record<string, Record<string, OverrideChoice>>>({})
+
+  const [riskDraft, setRiskDraft] = useState<Record<string, { sexUI: 'ANY' | 'M' | 'F'; risk: string }>>({})
 
   // dropdown state
   const [openGeneId, setOpenGeneId] = useState<string | null>(null)
   const [openSection, setOpenSection] = useState<Record<string, { recs: boolean; muts: boolean; risks: boolean }>>({})
-
-  // per-mutation UI helper (bulk pick by class)
-  const [mutBulkClassIdByMutation, setMutBulkClassIdByMutation] = useState<Record<string, string>>({})
 
   function toggleGene(geneId: string) {
     setOpenGeneId((cur) => (cur === geneId ? null : geneId))
   }
 
   function toggleSection(geneId: string, key: 'recs' | 'muts' | 'risks') {
-    const cur = openSection[geneId] ?? { recs: false, muts: false, risks: false }
-    const next = !cur[key]
-
-    // If we are OPENING the section, init drafts for whatever will render there
-    if (next) {
-      if (key === 'recs') {
-        ;(classesByGene.get(geneId) ?? []).forEach(initClassDraft)
-        ;(groupsByGene.get(geneId) ?? []).forEach(initGroupDraft)
-      }
-      if (key === 'muts') (mutationsByGene.get(geneId) ?? []).forEach((mu) => initMutationDraft(mu))
-      if (key === 'risks') (risksByGene.get(geneId) ?? []).forEach(initRiskDraft)
-    }
-
-    setOpenSection((p) => ({
-      ...p,
-      [geneId]: { ...(p[geneId] ?? cur), [key]: next },
-    }))
+    setOpenSection((p) => {
+      const cur = p[geneId] ?? { recs: false, muts: false, risks: false }
+      return { ...p, [geneId]: { ...cur, [key]: !cur[key] } }
+    })
   }
 
   function parseOptionalInt(s: string): number | null {
@@ -151,7 +148,10 @@ export default function EditPositionsClient() {
       if (g.error) throw g.error
       setGenes(g.data ?? [])
 
-      const c = await supabase.from('recommendation_classes').select('id,gene_id,name,created_at').order('name', { ascending: true })
+      const c = await supabase
+        .from('recommendation_classes')
+        .select('id,gene_id,name,created_at')
+        .order('name', { ascending: true })
       if (c.error) throw c.error
       setClasses(c.data ?? [])
 
@@ -166,7 +166,10 @@ export default function EditPositionsClient() {
       if (gl.error) throw gl.error
       setGroupClassLinks(gl.data ?? [])
 
-      const m = await supabase.from('gene_mutations').select('id,gene_id,mutation,pathogenicity,created_at').order('created_at', { ascending: false })
+      const m = await supabase
+        .from('gene_mutations')
+        .select('id,gene_id,mutation,pathogenicity,created_at')
+        .order('created_at', { ascending: false })
       if (m.error) throw m.error
       setMutations(m.data ?? [])
 
@@ -174,17 +177,19 @@ export default function EditPositionsClient() {
       if (ml.error) throw ml.error
       setMutationLinks(ml.data ?? [])
 
-      // Optional table: gene_mutation_classes
+      // NEW:
       const mcl = await supabase.from('gene_mutation_classes').select('mutation_id,class_id,created_at')
-      if (mcl.error) {
-        // If the user hasn't created the table yet, we just ignore it (admin UI still works with direct group links).
-        if ((mcl.error as any).code !== '42P01') throw mcl.error
-        setMutationClassLinks([])
-      } else {
-        setMutationClassLinks(mcl.data ?? [])
-      }
+      if (mcl.error) throw mcl.error
+      setMutationClassLinks(mcl.data ?? [])
 
-      const r = await supabase.from('gene_risks').select('id,gene_id,sex,risk,created_at').order('created_at', { ascending: false })
+      const movr = await supabase.from('gene_mutation_group_overrides').select('mutation_id,group_id,override,created_at')
+      if (movr.error) throw movr.error
+      setMutationOverrides(movr.data ?? [])
+
+      const r = await supabase
+        .from('gene_risks')
+        .select('id,gene_id,sex,risk,created_at')
+        .order('created_at', { ascending: false })
       if (r.error) throw r.error
       setRisks(r.data ?? [])
     } catch (e: any) {
@@ -257,6 +262,7 @@ export default function EditPositionsClient() {
     return m
   }, [mutationLinks])
 
+  // NEW: mutation → class ids
   const mutationClassIds = useMemo(() => {
     const m = new Map<string, Set<string>>()
     for (const l of mutationClassLinks) {
@@ -265,6 +271,16 @@ export default function EditPositionsClient() {
     }
     return m
   }, [mutationClassLinks])
+
+  // NEW: overrides map
+  const mutationOverrideMap = useMemo(() => {
+    const m = new Map<string, Map<string, OverrideChoice>>()
+    for (const row of mutationOverrides) {
+      if (!m.has(row.mutation_id)) m.set(row.mutation_id, new Map())
+      m.get(row.mutation_id)!.set(row.group_id, row.override)
+    }
+    return m
+  }, [mutationOverrides])
 
   const risksByGene = useMemo(() => {
     const m = new Map<string, RiskRow[]>()
@@ -284,13 +300,6 @@ export default function EditPositionsClient() {
     setGeneDraft((p) => {
       if (p[g.id]) return p
       return { ...p, [g.id]: { symbol: g.symbol ?? '', name: g.name ?? '' } }
-    })
-  }
-
-  function initClassDraft(c: RecClass) {
-    setClassDraft((p) => {
-      if (p[c.id]) return p
-      return { ...p, [c.id]: { name: c.name ?? '' } }
     })
   }
 
@@ -332,6 +341,7 @@ export default function EditPositionsClient() {
       return { ...p, [mu.id]: map }
     })
 
+    // NEW:
     setMutationClassPick((p) => {
       if (p[mu.id]) return p
       const current = mutationClassIds.get(mu.id) ?? new Set<string>()
@@ -339,12 +349,26 @@ export default function EditPositionsClient() {
       for (const cid of current) map[cid] = true
       return { ...p, [mu.id]: map }
     })
+
+    setMutationOverridePick((p) => {
+      if (p[mu.id]) return p
+      const byMut = mutationOverrideMap.get(mu.id) ?? new Map<string, OverrideChoice>()
+      const map: Record<string, OverrideChoice> = {}
+      for (const [gid, choice] of byMut.entries()) map[gid] = choice
+      return { ...p, [mu.id]: map }
+    })
   }
 
   function initRiskDraft(r: RiskRow) {
     setRiskDraft((p) => {
       if (p[r.id]) return p
-      return { ...p, [r.id]: { sex: r.sex, risk: r.risk ?? '' } }
+      return {
+        ...p,
+        [r.id]: {
+          sexUI: r.sex === 'M' ? 'M' : r.sex === 'F' ? 'F' : 'ANY',
+          risk: r.risk ?? '',
+        },
+      }
     })
   }
 
@@ -372,34 +396,18 @@ export default function EditPositionsClient() {
     }
   }
 
-  async function saveClass(classId: string) {
-    setError(null)
-    const d = classDraft[classId]
-    if (!d) return
-    const name = d.name.trim()
-    if (!name) return setError('Class name cannot be empty.')
-
-    setBusyKey(`class:${classId}`, true)
-    try {
-      const { error } = await supabase.from('recommendation_classes').update({ name }).eq('id', classId)
-      if (error) throw error
-      await loadAll()
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to save class.')
-    } finally {
-      setBusyKey(`class:${classId}`, false)
-    }
-  }
-
   async function deleteGroup(groupId: string) {
     setError(null)
     setBusyKey(`delgroup:${groupId}`, true)
     try {
-      // remove links first
       const a = await supabase.from('gene_mutation_groups').delete().eq('group_id', groupId)
       if (a.error) throw a.error
       const b = await supabase.from('recommendation_group_classes').delete().eq('group_id', groupId)
       if (b.error) throw b.error
+
+      // NEW: remove overrides pointing to this group
+      const o = await supabase.from('gene_mutation_group_overrides').delete().eq('group_id', groupId)
+      if (o.error) throw o.error
 
       const { error } = await supabase.from('recommendation_groups').delete().eq('id', groupId)
       if (error) throw error
@@ -436,16 +444,15 @@ export default function EditPositionsClient() {
 
       if (upErr) throw upErr
 
-      // handle class assignment:
-      // IMPORTANT: when appliesAll=true, DB triggers manage class links.
-      // We do NOT delete links here (otherwise we'd fight the triggers).
-      if (!d.appliesAll) {
+      if (d.appliesAll) {
+        const del = await supabase.from('recommendation_group_classes').delete().eq('group_id', gr.id)
+        if (del.error) throw del.error
+      } else {
         const picked = groupClassPick[gr.id] ?? {}
         const selectedClassIds = Object.entries(picked)
           .filter(([, v]) => v)
           .map(([k]) => k)
 
-        // rewrite join table as exact set
         const del = await supabase.from('recommendation_group_classes').delete().eq('group_id', gr.id)
         if (del.error) throw del.error
 
@@ -475,12 +482,16 @@ export default function EditPositionsClient() {
       const delLinks = await supabase.from('gene_mutation_groups').delete().eq('mutation_id', mutationId)
       if (delLinks.error) throw delLinks.error
 
-      // optional table
-      const delClassLinks = await supabase.from('gene_mutation_classes').delete().eq('mutation_id', mutationId)
-      if (delClassLinks.error && (delClassLinks.error as any).code !== '42P01') throw delClassLinks.error
+      // NEW:
+      const delCls = await supabase.from('gene_mutation_classes').delete().eq('mutation_id', mutationId)
+      if (delCls.error) throw delCls.error
+
+      const delOv = await supabase.from('gene_mutation_group_overrides').delete().eq('mutation_id', mutationId)
+      if (delOv.error) throw delOv.error
 
       const { error } = await supabase.from('gene_mutations').delete().eq('id', mutationId)
       if (error) throw error
+
       await loadAll()
     } catch (e: any) {
       setError(e?.message ?? 'Failed to delete mutation.')
@@ -502,48 +513,62 @@ export default function EditPositionsClient() {
 
     setBusyKey(`mut:${mu.id}`, true)
     try {
-      const up = await supabase.from('gene_mutations').update({ mutation, pathogenicity: d.pathogenicity }).eq('id', mu.id)
+      const up = await supabase
+        .from('gene_mutations')
+        .update({ mutation, pathogenicity: d.pathogenicity })
+        .eq('id', mu.id)
       if (up.error) throw up.error
 
-      const geneGroups = groupsByGene.get(geneId) ?? []
-      const allowedGroupIds = new Set(geneGroups.map((g) => g.id))
-      const geneClasses = classesByGene.get(geneId) ?? []
-      const allowedClassIds = new Set(geneClasses.map((c) => c.id))
+      // Manual links to groups (still allowed)
+      const picked = mutationGroupPick[mu.id] ?? {}
+      const allowedGroupIds = new Set((groupsByGene.get(geneId) ?? []).map((g) => g.id))
+      const selectedGroupIds = Object.entries(picked)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+        .filter((gid) => allowedGroupIds.has(gid))
 
-      // update direct links to groups (only groups of same gene)
-      {
-        const picked = mutationGroupPick[mu.id] ?? {}
-        const selectedGroupIds = Object.entries(picked)
-          .filter(([, v]) => v)
-          .map(([k]) => k)
-          .filter((gid) => allowedGroupIds.has(gid))
+      const del = await supabase.from('gene_mutation_groups').delete().eq('mutation_id', mu.id)
+      if (del.error) throw del.error
 
-        const del = await supabase.from('gene_mutation_groups').delete().eq('mutation_id', mu.id)
-        if (del.error) throw del.error
-
-        if (selectedGroupIds.length > 0) {
-          const ins = await supabase.from('gene_mutation_groups').insert(selectedGroupIds.map((gid) => ({ mutation_id: mu.id, group_id: gid })))
-          if (ins.error) throw ins.error
-        }
+      if (selectedGroupIds.length > 0) {
+        const ins = await supabase.from('gene_mutation_groups').insert(
+          selectedGroupIds.map((gid) => ({ mutation_id: mu.id, group_id: gid }))
+        )
+        if (ins.error) throw ins.error
       }
 
-      // update class links (optional table)
-      {
-        const picked = mutationClassPick[mu.id] ?? {}
-        const selectedClassIds = Object.entries(picked)
-          .filter(([, v]) => v)
-          .map(([k]) => k)
-          .filter((cid) => allowedClassIds.has(cid))
+      // NEW: Save mutation ↔ class picks
+      const pickedClasses = mutationClassPick[mu.id] ?? {}
+      const allowedClassIds = new Set((classesByGene.get(geneId) ?? []).map((c) => c.id))
+      const selectedClassIds = Object.entries(pickedClasses)
+        .filter(([, v]) => v)
+        .map(([cid]) => cid)
+        .filter((cid) => allowedClassIds.has(cid))
 
-        const del = await supabase.from('gene_mutation_classes').delete().eq('mutation_id', mu.id)
-        if (del.error) {
-          if ((del.error as any).code !== '42P01') throw del.error
-        } else {
-          if (selectedClassIds.length > 0) {
-            const ins = await supabase.from('gene_mutation_classes').insert(selectedClassIds.map((cid) => ({ mutation_id: mu.id, class_id: cid })))
-            if (ins.error) throw ins.error
-          }
-        }
+      const delC = await supabase.from('gene_mutation_classes').delete().eq('mutation_id', mu.id)
+      if (delC.error) throw delC.error
+
+      if (selectedClassIds.length > 0) {
+        const insC = await supabase.from('gene_mutation_classes').insert(
+          selectedClassIds.map((cid) => ({ mutation_id: mu.id, class_id: cid }))
+        )
+        if (insC.error) throw insC.error
+      }
+
+      // NEW: Save overrides (only for groups in this gene)
+      const ovPicked = mutationOverridePick[mu.id] ?? {}
+      const rows: Array<{ mutation_id: string; group_id: string; override: 'include' | 'exclude' }> = []
+      for (const [gid, choice] of Object.entries(ovPicked)) {
+        if (!allowedGroupIds.has(gid)) continue
+        if (choice === 'include' || choice === 'exclude') rows.push({ mutation_id: mu.id, group_id: gid, override: choice })
+      }
+
+      const delO = await supabase.from('gene_mutation_group_overrides').delete().eq('mutation_id', mu.id)
+      if (delO.error) throw delO.error
+
+      if (rows.length > 0) {
+        const insO = await supabase.from('gene_mutation_group_overrides').insert(rows)
+        if (insO.error) throw insO.error
       }
 
       await loadAll()
@@ -572,7 +597,8 @@ export default function EditPositionsClient() {
     setError(null)
     const d = riskDraft[r.id]
     if (!d) return
-    const sex = parseSexFromUI(d.sex)
+
+    const sex = parseSexFromUI(d.sexUI)
     const risk = d.risk.trim()
     if (!risk) {
       setError('Risk cannot be empty.')
@@ -599,28 +625,30 @@ export default function EditPositionsClient() {
       if (error) throw error
       await loadAll()
     } catch (e: any) {
-      setError(e?.message ?? 'Failed to delete class (it may still be used by recommendations).')
+      setError(e?.message ?? 'Failed to delete class (it may still be used).')
     } finally {
       setBusyKey(`delclass:${classId}`, false)
     }
   }
 
-  function bulkSelectMutationGroups(muId: string, geneId: string, classId: string | undefined, mode: 'replace' | 'add') {
-    if (!classId) return
-    const geneGroups = groupsByGene.get(geneId) ?? []
-    const ids = geneGroups.filter((g) => groupMatchesClass(g, classId, groupClassIds)).map((g) => g.id)
-
-    setMutationGroupPick((p) => {
-      const cur = p[muId] ?? {}
-      let next: Record<string, boolean> = {}
-
-      if (mode === 'add') next = { ...cur }
-      for (const gid of ids) next[gid] = true
-
-      // for replace mode, anything not in ids becomes false (we just omit it)
-      return { ...p, [muId]: next }
-    })
+  async function saveClassName(c: RecClass, name: string) {
+    setError(null)
+    const nm = name.trim()
+    if (!nm) return setError('Class name cannot be empty.')
+    setBusyKey(`saveclass:${c.id}`, true)
+    try {
+      const { error } = await supabase.from('recommendation_classes').update({ name: nm }).eq('id', c.id)
+      if (error) throw error
+      await loadAll()
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to save class name.')
+    } finally {
+      setBusyKey(`saveclass:${c.id}`, false)
+    }
   }
+
+  // local draft for class names (simple)
+  const [classNameDraft, setClassNameDraft] = useState<Record<string, string>>({})
 
   return (
     <main className="p-6 space-y-6 text-white">
@@ -652,7 +680,6 @@ export default function EditPositionsClient() {
 
             return (
               <div key={g.id} className="rounded-2xl border p-4">
-                {/* Gene header */}
                 <div className="flex items-start justify-between gap-4">
                   <button
                     className={btn('text-left', false)}
@@ -706,14 +733,22 @@ export default function EditPositionsClient() {
                           />
                         </div>
                       </div>
-                      <button className={btn('rounded-xl border px-4 py-3', busy[`gene:${g.id}`])} onClick={() => saveGene(g.id)} disabled={!!busy[`gene:${g.id}`]}>
+                      <button
+                        className={btn('rounded-xl border px-4 py-3', busy[`gene:${g.id}`])}
+                        onClick={() => saveGene(g.id)}
+                        disabled={!!busy[`gene:${g.id}`]}
+                      >
                         {busy[`gene:${g.id}`] ? 'Saving…' : 'Save gene'}
                       </button>
                     </div>
 
-                    {/* Recommendations dropdown */}
+                    {/* Recommendations */}
                     <div className="rounded-2xl border p-4">
-                      <button className={btn('w-full text-left flex items-center justify-between', false)} type="button" onClick={() => toggleSection(g.id, 'recs')}>
+                      <button
+                        className={btn('w-full text-left flex items-center justify-between', false)}
+                        type="button"
+                        onClick={() => toggleSection(g.id, 'recs')}
+                      >
                         <span className="text-lg font-semibold">Recommendations</span>
                         <span className="opacity-70">{sec.recs ? '▲' : '▼'}</span>
                       </button>
@@ -728,20 +763,28 @@ export default function EditPositionsClient() {
                             ) : (
                               <div className="mt-3 space-y-2">
                                 {geneClasses.map((c) => {
-                                  const d = classDraft[c.id] ?? { name: c.name }
+                                  const v = classNameDraft[c.id] ?? c.name
                                   return (
                                     <div key={c.id} className="rounded-xl border p-3 space-y-2">
                                       <div className="grid gap-2 md:grid-cols-[1fr_auto_auto] items-center">
                                         <input
                                           className="w-full rounded-xl border p-3 bg-black text-white"
-                                          value={d.name}
-                                          onChange={(e) => setClassDraft((p) => ({ ...p, [c.id]: { name: e.target.value } }))}
+                                          value={v}
+                                          onChange={(e) => setClassNameDraft((p) => ({ ...p, [c.id]: e.target.value }))}
                                         />
-                                        <button className={btn('rounded-xl border px-3 py-2 text-sm', busy[`class:${c.id}`])} onClick={() => saveClass(c.id)} disabled={!!busy[`class:${c.id}`]}>
-                                          {busy[`class:${c.id}`] ? 'Saving…' : 'Save'}
+                                        <button
+                                          className={btn('rounded-xl border px-3 py-2 text-sm', busy[`saveclass:${c.id}`])}
+                                          onClick={() => saveClassName(c, v)}
+                                          disabled={!!busy[`saveclass:${c.id}`]}
+                                        >
+                                          {busy[`saveclass:${c.id}`] ? 'Saving…' : 'Save name'}
                                         </button>
-                                        <button className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delclass:${c.id}`])} onClick={() => deleteClass(c.id)} disabled={!!busy[`delclass:${c.id}`]}>
-                                          {busy[`delclass:${c.id}`] ? 'Deleting…' : 'Delete'}
+                                        <button
+                                          className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delclass:${c.id}`])}
+                                          onClick={() => deleteClass(c.id)}
+                                          disabled={!!busy[`delclass:${c.id}`]}
+                                        >
+                                          {busy[`delclass:${c.id}`] ? 'Deleting…' : 'Delete class'}
                                         </button>
                                       </div>
                                     </div>
@@ -764,17 +807,33 @@ export default function EditPositionsClient() {
                                   const picked = groupClassPick[gr.id] ?? {}
                                   const appliesAll = !!d?.appliesAll
 
+                                  const effectiveClassNames = appliesAll
+                                    ? geneClasses.map((c) => c.name)
+                                    : geneClasses.filter((c) => !!picked[c.id]).map((c) => c.name)
+
                                   return (
-                                    <div key={gr.id} className="rounded-2xl border p-4 space-y-3">
+                                    <div
+                                      key={gr.id}
+                                      className="rounded-2xl border p-4 space-y-3"
+                                      onMouseEnter={() => initGroupDraft(gr)}
+                                    >
                                       <div className="flex items-start justify-between gap-3">
                                         <div className="text-sm opacity-80">
-                                          {/* removed the previous “bullshit” summary block; keep only a tiny hint */}
-                                          <span className="opacity-70">
-                                            {sexLabel(gr.sex)} · {prettyAge(gr.age_min, gr.age_max)}
-                                          </span>
+                                          <div>
+                                            <span className="font-semibold">Sex:</span> {sexLabel(gr.sex)} ·{' '}
+                                            <span className="font-semibold">Age:</span> {prettyAge(gr.age_min, gr.age_max)}
+                                          </div>
+                                          <div className="mt-1">
+                                            <span className="font-semibold">Classes:</span>{' '}
+                                            {appliesAll ? 'ALL (including future)' : effectiveClassNames.length ? effectiveClassNames.join(', ') : '—'}
+                                          </div>
                                         </div>
 
-                                        <button className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delgroup:${gr.id}`])} onClick={() => deleteGroup(gr.id)} disabled={!!busy[`delgroup:${gr.id}`]}>
+                                        <button
+                                          className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delgroup:${gr.id}`])}
+                                          onClick={() => deleteGroup(gr.id)}
+                                          disabled={!!busy[`delgroup:${gr.id}`]}
+                                        >
                                           {busy[`delgroup:${gr.id}`] ? 'Deleting…' : 'Delete group'}
                                         </button>
                                       </div>
@@ -784,11 +843,11 @@ export default function EditPositionsClient() {
                                           <label className="text-sm">Sex</label>
                                           <select
                                             className="w-full rounded-xl border p-3 bg-black text-white"
-                                            value={d?.sexUI ?? (gr.sex === 'M' ? 'M' : gr.sex === 'F' ? 'F' : 'ANY')}
+                                            value={d?.sexUI ?? 'ANY'}
                                             onChange={(e) =>
                                               setGroupDraft((p) => ({
                                                 ...p,
-                                                [gr.id]: { ...(p[gr.id] ?? { sexUI: 'ANY', ageMin: '', ageMax: '', recs: gr.recommendations ?? '', appliesAll: gr.applies_to_all_classes }), sexUI: e.target.value as any },
+                                                [gr.id]: { ...(p[gr.id] as any), sexUI: e.target.value as any },
                                               }))
                                             }
                                           >
@@ -803,11 +862,11 @@ export default function EditPositionsClient() {
                                           <input
                                             className="w-full rounded-xl border p-3 bg-black text-white"
                                             placeholder="blank = any"
-                                            value={d?.ageMin ?? (gr.age_min == null ? '' : String(gr.age_min))}
+                                            value={d?.ageMin ?? ''}
                                             onChange={(e) =>
                                               setGroupDraft((p) => ({
                                                 ...p,
-                                                [gr.id]: { ...(p[gr.id] ?? { sexUI: 'ANY', ageMin: '', ageMax: '', recs: gr.recommendations ?? '', appliesAll: gr.applies_to_all_classes }), ageMin: e.target.value },
+                                                [gr.id]: { ...(p[gr.id] as any), ageMin: e.target.value },
                                               }))
                                             }
                                           />
@@ -818,11 +877,11 @@ export default function EditPositionsClient() {
                                           <input
                                             className="w-full rounded-xl border p-3 bg-black text-white"
                                             placeholder="blank = any"
-                                            value={d?.ageMax ?? (gr.age_max == null ? '' : String(gr.age_max))}
+                                            value={d?.ageMax ?? ''}
                                             onChange={(e) =>
                                               setGroupDraft((p) => ({
                                                 ...p,
-                                                [gr.id]: { ...(p[gr.id] ?? { sexUI: 'ANY', ageMin: '', ageMax: '', recs: gr.recommendations ?? '', appliesAll: gr.applies_to_all_classes }), ageMax: e.target.value },
+                                                [gr.id]: { ...(p[gr.id] as any), ageMax: e.target.value },
                                               }))
                                             }
                                           />
@@ -831,12 +890,17 @@ export default function EditPositionsClient() {
                                         <div className="space-y-1">
                                           <label className="text-sm">Applies to all classes</label>
                                           <button
-                                            className={btn(`w-full rounded-xl border px-4 py-3 text-left ${appliesAll ? 'bg-white text-black' : 'bg-black text-white'}`, false)}
+                                            className={btn(
+                                              `w-full rounded-xl border px-4 py-3 text-left ${
+                                                appliesAll ? 'bg-white text-black' : 'bg-black text-white'
+                                              }`,
+                                              false
+                                            )}
                                             type="button"
                                             onClick={() =>
                                               setGroupDraft((p) => ({
                                                 ...p,
-                                                [gr.id]: { ...(p[gr.id] ?? { sexUI: 'ANY', ageMin: '', ageMax: '', recs: gr.recommendations ?? '', appliesAll: gr.applies_to_all_classes }), appliesAll: !appliesAll },
+                                                [gr.id]: { ...(p[gr.id] as any), appliesAll: !appliesAll },
                                               }))
                                             }
                                           >
@@ -880,13 +944,17 @@ export default function EditPositionsClient() {
                                           onChange={(e) =>
                                             setGroupDraft((p) => ({
                                               ...p,
-                                              [gr.id]: { ...(p[gr.id] ?? { sexUI: 'ANY', ageMin: '', ageMax: '', recs: gr.recommendations ?? '', appliesAll: gr.applies_to_all_classes }), recs: e.target.value },
+                                              [gr.id]: { ...(p[gr.id] as any), recs: e.target.value },
                                             }))
                                           }
                                         />
                                       </div>
 
-                                      <button className={btn('rounded-xl border px-4 py-3', busy[`group:${gr.id}`])} onClick={() => saveGroup(gr)} disabled={!!busy[`group:${gr.id}`]}>
+                                      <button
+                                        className={btn('rounded-xl border px-4 py-3', busy[`group:${gr.id}`])}
+                                        onClick={() => saveGroup(gr)}
+                                        disabled={!!busy[`group:${gr.id}`]}
+                                      >
                                         {busy[`group:${gr.id}`] ? 'Saving…' : 'Save group'}
                                       </button>
                                     </div>
@@ -899,260 +967,376 @@ export default function EditPositionsClient() {
                       )}
                     </div>
 
-                    {/* Mutations dropdown */}
-                    <div className="rounded-2xl border p-4">
-                      <button className={btn('w-full text-left flex items-center justify-between', false)} type="button" onClick={() => toggleSection(g.id, 'muts')}>
-                        <span className="text-lg font-semibold">Mutations</span>
-                        <span className="opacity-70">{sec.muts ? '▲' : '▼'}</span>
-                      </button>
+                    {/* Mutations */}
+                      <div className="rounded-2xl border p-4">
+                        <button
+                          className={btn('w-full text-left flex items-center justify-between', false)}
+                          type="button"
+                          onClick={() => {
+                            const willOpen = !sec.muts
+                            toggleSection(g.id, 'muts')
 
-                      {sec.muts && (
-                        <div className="mt-4 space-y-3">
-                          {geneMuts.length === 0 ? (
-                            <p className="opacity-70 text-sm">No mutations for this gene yet.</p>
-                          ) : (
-                            geneMuts.map((mu) => {
-                              const d = mutationDraft[mu.id]
-                              const picked = mutationGroupPick[mu.id] ?? {}
-                              const classPicked = mutationClassPick[mu.id] ?? {}
-                              const geneGroupsLocal = groupsByGene.get(g.id) ?? []
-                              const geneClassesLocal = classesByGene.get(g.id) ?? []
+                            // ✅ IMPORTANT: initialize drafts ONLY when opening (never inside render/map)
+                            if (willOpen) {
+                              geneMuts.forEach((mu) => initMutationDraft(mu))
+                            }
+                          }}
+                        >
+                          <span className="text-lg font-semibold">Mutations</span>
+                          <span className="opacity-70">{sec.muts ? '▲' : '▼'}</span>
+                        </button>
 
-                              return (
-                                <div key={mu.id} className="rounded-2xl border p-4 space-y-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="text-sm opacity-80">
-                                      <div>
-                                        <span className="font-semibold">Current:</span> {mu.mutation} · <span className="font-semibold">Pathogenicity:</span> {mu.pathogenicity}
+                        {sec.muts && (
+                          <div className="mt-4 space-y-3">
+                            {geneMuts.length === 0 ? (
+                              <p className="opacity-70 text-sm">No mutations for this gene yet.</p>
+                            ) : (
+                              geneMuts.map((mu) => {
+                                // ❌ DO NOT call initMutationDraft(mu) here (causes re-render loop)
+
+                                const d = mutationDraft[mu.id]
+                                const picked = mutationGroupPick[mu.id] ?? {}
+                                const classPicked = mutationClassPick[mu.id] ?? {}
+                                const geneGroupsLocal = groupsByGene.get(g.id) ?? []
+                                const geneClassesLocal = classesByGene.get(g.id) ?? []
+
+                                const pickedClassIds = Object.entries(classPicked)
+                                  .filter(([, v]) => v)
+                                  .map(([cid]) => cid)
+
+                                return (
+                                  <div key={mu.id} className="rounded-2xl border p-4 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="text-sm opacity-80">
+                                        <div>
+                                          <span className="font-semibold">Current:</span> {mu.mutation} ·{' '}
+                                          <span className="font-semibold">Pathogenicity:</span> {mu.pathogenicity}
+                                        </div>
                                       </div>
+
+                                      <button
+                                        className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delmut:${mu.id}`])}
+                                        onClick={() => deleteMutation(mu.id)}
+                                        disabled={!!busy[`delmut:${mu.id}`]}
+                                      >
+                                        {busy[`delmut:${mu.id}`] ? 'Deleting…' : 'Delete mutation'}
+                                      </button>
                                     </div>
 
-                                    <button className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delmut:${mu.id}`])} onClick={() => deleteMutation(mu.id)} disabled={!!busy[`delmut:${mu.id}`]}>
-                                      {busy[`delmut:${mu.id}`] ? 'Deleting…' : 'Delete mutation'}
-                                    </button>
-                                  </div>
-
-                                  <div className="grid gap-3 md:grid-cols-2">
-                                    <div className="space-y-1">
-                                      <label className="text-sm">Mutation</label>
-                                      <input
-                                        className="w-full rounded-xl border p-3 bg-black text-white"
-                                        value={d?.mutation ?? mu.mutation ?? ''}
-                                        onChange={(e) =>
-                                          setMutationDraft((p) => ({
-                                            ...p,
-                                            [mu.id]: { mutation: e.target.value, pathogenicity: p[mu.id]?.pathogenicity ?? mu.pathogenicity },
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <label className="text-sm">Pathogenicity</label>
-                                      <div className="flex gap-2">
-                                        <button
-                                          type="button"
-                                          className={btn(
-                                            `rounded-xl border px-4 py-3 ${(d?.pathogenicity ?? mu.pathogenicity) === 'pathogenic' ? 'bg-white text-black' : ''}`,
-                                            false
-                                          )}
-                                          onClick={() => setMutationDraft((p) => ({ ...p, [mu.id]: { ...(p[mu.id] ?? { mutation: mu.mutation, pathogenicity: mu.pathogenicity }), pathogenicity: 'pathogenic' } }))}
-                                        >
-                                          pathogenic
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className={btn(
-                                            `rounded-xl border px-4 py-3 ${(d?.pathogenicity ?? mu.pathogenicity) === 'likely_pathogenic' ? 'bg-white text-black' : ''}`,
-                                            false
-                                          )}
-                                          onClick={() =>
-                                            setMutationDraft((p) => ({ ...p, [mu.id]: { ...(p[mu.id] ?? { mutation: mu.mutation, pathogenicity: mu.pathogenicity }), pathogenicity: 'likely_pathogenic' } }))
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                      <div className="space-y-1">
+                                        <label className="text-sm">Mutation</label>
+                                        <input
+                                          className="w-full rounded-xl border p-3 bg-black text-white"
+                                          value={d?.mutation ?? mu.mutation ?? ''}
+                                          onChange={(e) =>
+                                            setMutationDraft((p) => ({
+                                              ...p,
+                                              [mu.id]: {
+                                                mutation: e.target.value,
+                                                pathogenicity: p[mu.id]?.pathogenicity ?? mu.pathogenicity,
+                                              },
+                                            }))
                                           }
-                                        >
-                                          likely pathogenic
-                                        </button>
+                                        />
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <label className="text-sm">Pathogenicity</label>
+                                        <div className="flex gap-2">
+                                          <button
+                                            type="button"
+                                            className={btn(
+                                              `rounded-xl border px-4 py-3 ${
+                                                (d?.pathogenicity ?? mu.pathogenicity) === 'pathogenic'
+                                                  ? 'bg-white text-black'
+                                                  : ''
+                                              }`,
+                                              false
+                                            )}
+                                            onClick={() =>
+                                              setMutationDraft((p) => ({
+                                                ...p,
+                                                [mu.id]: { ...(p[mu.id] as any), pathogenicity: 'pathogenic' },
+                                              }))
+                                            }
+                                          >
+                                            pathogenic
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className={btn(
+                                              `rounded-xl border px-4 py-3 ${
+                                                (d?.pathogenicity ?? mu.pathogenicity) === 'likely_pathogenic'
+                                                  ? 'bg-white text-black'
+                                                  : ''
+                                              }`,
+                                              false
+                                            )}
+                                            onClick={() =>
+                                              setMutationDraft((p) => ({
+                                                ...p,
+                                                [mu.id]: { ...(p[mu.id] as any), pathogenicity: 'likely_pathogenic' },
+                                              }))
+                                            }
+                                          >
+                                            likely pathogenic
+                                          </button>
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
 
-                                  {/* Class links */}
-                                  <div className="rounded-xl border p-3">
-                                    <div className="text-sm font-semibold mb-2">Linked classes (auto-include new groups in that class)</div>
-                                    {geneClassesLocal.length === 0 ? (
-                                      <div className="text-sm opacity-70">No classes exist for this gene yet.</div>
-                                    ) : (
-                                      <div className="grid gap-2 md:grid-cols-2">
-                                        {geneClassesLocal.map((c) => (
-                                          <label key={c.id} className="flex items-center gap-2 rounded-lg border p-2">
-                                            <input
-                                              type="checkbox"
-                                              checked={!!classPicked[c.id]}
-                                              onChange={(e) =>
-                                                setMutationClassPick((p) => ({
-                                                  ...p,
-                                                  [mu.id]: { ...(p[mu.id] ?? {}), [c.id]: e.target.checked },
-                                                }))
-                                              }
-                                            />
-                                            <span className="text-sm">{c.name}</span>
-                                          </label>
-                                        ))}
-                                      </div>
-                                    )}
-                                    <div className="mt-2 text-xs opacity-70">
-                                      Works only if you created the <span className="font-semibold">gene_mutation_classes</span> table in Supabase. Otherwise, only direct group links below are used.
-                                    </div>
-                                  </div>
-
-                                  {/* Direct group links */}
-                                  <div className="rounded-xl border p-3 space-y-3">
-                                    <div className="flex items-end justify-between gap-3">
-                                      <div className="text-sm font-semibold">Linked recommendation groups</div>
-
-                                      <div className="grid gap-2 md:grid-cols-[1fr_auto_auto] items-center">
-                                        <select
-                                          className="w-full rounded-xl border p-2 bg-black text-white text-sm"
-                                          value={mutBulkClassIdByMutation[mu.id] ?? ''}
-                                          onChange={(e) => setMutBulkClassIdByMutation((p) => ({ ...p, [mu.id]: e.target.value }))}
-                                        >
-                                          <option value="">Bulk select by class…</option>
+                                    {/* NEW: Classes for mutation */}
+                                    <div className="rounded-xl border p-3 space-y-2">
+                                      <div className="text-sm font-semibold">Mutation classes (AUTO links future groups)</div>
+                                      {geneClassesLocal.length === 0 ? (
+                                        <div className="text-sm opacity-70">No recommendation classes for this gene.</div>
+                                      ) : (
+                                        <div className="grid gap-2 md:grid-cols-2">
                                           {geneClassesLocal.map((c) => (
-                                            <option key={c.id} value={c.id}>
-                                              {c.name}
-                                            </option>
-                                          ))}
-                                        </select>
-                                        <button
-                                          type="button"
-                                          className="rounded-xl border px-3 py-2 text-sm active:translate-y-[1px]"
-                                          onClick={() => bulkSelectMutationGroups(mu.id, g.id, mutBulkClassIdByMutation[mu.id], 'replace')}
-                                          disabled={!mutBulkClassIdByMutation[mu.id]}
-                                        >
-                                          Replace
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="rounded-xl border px-3 py-2 text-sm active:translate-y-[1px]"
-                                          onClick={() => bulkSelectMutationGroups(mu.id, g.id, mutBulkClassIdByMutation[mu.id], 'add')}
-                                          disabled={!mutBulkClassIdByMutation[mu.id]}
-                                        >
-                                          Add
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    {geneGroupsLocal.length === 0 ? (
-                                      <div className="text-sm opacity-70">No recommendation groups exist for this gene.</div>
-                                    ) : (
-                                      <div className="space-y-2">
-                                        {geneGroupsLocal.map((gr) => {
-                                          const dgr = groupDraft[gr.id]
-                                          const label = `${sexLabel(gr.sex)} · ${prettyAge(gr.age_min, gr.age_max)}`
-                                          return (
-                                            <label key={gr.id} className="flex items-start gap-2 rounded-lg border p-2">
+                                            <label key={c.id} className="flex items-center gap-2 rounded-lg border p-2">
                                               <input
                                                 type="checkbox"
-                                                checked={!!picked[gr.id]}
+                                                checked={!!classPicked[c.id]}
                                                 onChange={(e) =>
-                                                  setMutationGroupPick((p) => ({
+                                                  setMutationClassPick((p) => ({
                                                     ...p,
-                                                    [mu.id]: { ...(p[mu.id] ?? {}), [gr.id]: e.target.checked },
+                                                    [mu.id]: { ...(p[mu.id] ?? {}), [c.id]: e.target.checked },
                                                   }))
                                                 }
                                               />
-                                              <span className="text-sm">
-                                                <span className="font-semibold">{label}</span>
-                                                <span className="opacity-70">
-                                                  {' '}
-                                                  — {(dgr?.recs ?? gr.recommendations).slice(0, 90)}
-                                                  {(dgr?.recs ?? gr.recommendations).length > 90 ? '…' : ''}
-                                                </span>
-                                              </span>
+                                              <span className="text-sm">{c.name}</span>
                                             </label>
-                                          )
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
 
-                                  <button className={btn('rounded-xl border px-4 py-3', busy[`mut:${mu.id}`])} onClick={() => saveMutation(mu, g.id)} disabled={!!busy[`mut:${mu.id}`]}>
-                                    {busy[`mut:${mu.id}`] ? 'Saving…' : 'Save mutation'}
-                                  </button>
-                                </div>
-                              )
-                            })
-                          )}
-                        </div>
-                      )}
-                    </div>
+                                    {/* Groups + overrides */}
+                                    <div className="rounded-xl border p-3">
+                                      <div className="text-sm font-semibold mb-2">Recommendation groups</div>
 
-                    {/* Risks dropdown */}
-                    <div className="rounded-2xl border p-4">
-                      <button className={btn('w-full text-left flex items-center justify-between', false)} type="button" onClick={() => toggleSection(g.id, 'risks')}>
-                        <span className="text-lg font-semibold">Risks</span>
-                        <span className="opacity-70">{sec.risks ? '▲' : '▼'}</span>
-                      </button>
+                                      {geneGroupsLocal.length === 0 ? (
+                                        <div className="text-sm opacity-70">No recommendation groups exist for this gene.</div>
+                                      ) : (
+                                        <div className="space-y-2">
+                                          {geneGroupsLocal.map((gr) => {
+                                            const dgr = groupDraft[gr.id]
+                                            const label = `${sexLabel(gr.sex)} · ${prettyAge(gr.age_min, gr.age_max)}`
 
-                      {sec.risks && (
-                        <div className="mt-4 space-y-3">
-                          {geneRisks.length === 0 ? (
-                            <p className="opacity-70 text-sm">No risks for this gene yet.</p>
-                          ) : (
-                            geneRisks.map((r) => {
-                              const d = riskDraft[r.id] ?? { sex: r.sex, risk: r.risk ?? '' }
+                                            const groupClasses = groupClassIds.get(gr.id) ?? new Set<string>()
+                                            const autoByClass =
+                                              !!gr.applies_to_all_classes || pickedClassIds.some((cid) => groupClasses.has(cid))
 
-                              return (
-                                <div key={r.id} className="rounded-2xl border p-4 space-y-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <button className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delrisk:${r.id}`])} onClick={() => deleteRisk(r.id)} disabled={!!busy[`delrisk:${r.id}`]}>
-                                      {busy[`delrisk:${r.id}`] ? 'Deleting…' : 'Delete risk'}
+                                            const overrideChoice: OverrideChoice =
+                                              mutationOverridePick[mu.id]?.[gr.id] ?? 'default'
+
+                                            const effectiveIncluded =
+                                              overrideChoice === 'exclude'
+                                                ? false
+                                                : overrideChoice === 'include'
+                                                  ? true
+                                                  : autoByClass || !!picked[gr.id]
+
+                                            return (
+                                              <div key={gr.id} className="rounded-lg border p-2 flex flex-col gap-2">
+                                                <div className="flex items-start justify-between gap-3">
+                                                  <label className="flex items-start gap-2">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={effectiveIncluded}
+                                                      onChange={(e) => {
+                                                        const next = e.target.checked
+
+                                                        // If an override is set, clicking the checkbox should reset override back to "default"
+                                                        // (so the checkbox reflects the real computed state again)
+                                                        if (overrideChoice !== 'default') {
+                                                          setMutationOverridePick((p) => ({
+                                                            ...p,
+                                                            [mu.id]: { ...(p[mu.id] ?? {}), [gr.id]: 'default' },
+                                                          }))
+                                                          return
+                                                        }
+
+                                                        // If included automatically via class, the checkbox controls the override:
+                                                        // - uncheck => force EXCLUDE
+                                                        // - check   => go back to DEFAULT (AUTO include)
+                                                        if (autoByClass) {
+                                                          setMutationOverridePick((p) => ({
+                                                            ...p,
+                                                            [mu.id]: { ...(p[mu.id] ?? {}), [gr.id]: next ? 'default' : 'exclude' },
+                                                          }))
+                                                          return
+                                                        }
+
+                                                        // Otherwise it's a purely manual link (checkbox controls manual link)
+                                                        setMutationGroupPick((p) => ({
+                                                          ...p,
+                                                          [mu.id]: { ...(p[mu.id] ?? {}), [gr.id]: next },
+                                                        }))
+                                                      }}
+                                                    />
+                                                    <span className="text-sm">
+                                                      <span className="font-semibold">{label}</span>
+                                                      {autoByClass ? (
+                                                        <span className="ml-2 text-xs opacity-70">AUTO via class</span>
+                                                      ) : null}
+                                                      <span className="opacity-70">
+                                                        {' '}
+                                                        — {(dgr?.recs ?? gr.recommendations ?? '').slice(0, 90)}
+                                                        {(dgr?.recs ?? gr.recommendations ?? '').length > 90 ? '…' : ''}
+                                                      </span>
+                                                    </span>
+                                                  </label>
+
+                                                  <div className="flex items-center gap-2">
+                                                    <span className="text-xs opacity-70">Override</span>
+                                                    <select
+                                                      className="rounded-lg border bg-black text-white text-xs p-2"
+                                                      value={overrideChoice}
+                                                      onChange={(e) =>
+                                                        setMutationOverridePick((p) => ({
+                                                          ...p,
+                                                          [mu.id]: {
+                                                            ...(p[mu.id] ?? {}),
+                                                            [gr.id]: e.target.value as OverrideChoice,
+                                                          },
+                                                        }))
+                                                      }
+                                                    >
+                                                      <option value="default">Default</option>
+                                                      <option value="include">Always include</option>
+                                                      <option value="exclude">Always exclude</option>
+                                                    </select>
+                                                  </div>
+                                                </div>
+
+                                                <div className="text-xs opacity-70">
+                                                  Effective: {effectiveIncluded ? 'INCLUDED' : 'EXCLUDED / not linked'}
+                                                </div>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    <button
+                                      className={btn('rounded-xl border px-4 py-3', busy[`mut:${mu.id}`])}
+                                      onClick={() => saveMutation(mu, g.id)}
+                                      disabled={!!busy[`mut:${mu.id}`]}
+                                    >
+                                      {busy[`mut:${mu.id}`] ? 'Saving…' : 'Save mutation'}
                                     </button>
                                   </div>
+                                )
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
 
-                                  <div className="grid gap-3 md:grid-cols-2">
-                                    <div className="space-y-1">
-                                      <label className="text-sm">Sex</label>
-                                      <select
-                                        className="w-full rounded-xl border p-3 bg-black text-white"
-                                        value={d.sex}
-                                        onChange={(e) =>
-                                          setRiskDraft((prev) => ({
-                                            ...prev,
-                                            [r.id]: { ...d, sex: e.target.value as RiskSex },
-                                          }))
-                                        }
+                    {/* Risks */}
+                      <div className="rounded-2xl border p-4">
+                        <button
+                          className={btn('w-full text-left flex items-center justify-between', false)}
+                          type="button"
+                          onClick={() => {
+                            const willOpen = !sec.risks
+                            toggleSection(g.id, 'risks')
+
+                            // ✅ Initialize drafts ONLY when opening (never inside render/map)
+                            if (willOpen) {
+                              geneRisks.forEach((r) => initRiskDraft(r))
+                            }
+                          }}
+                        >
+                          <span className="text-lg font-semibold">Risks</span>
+                          <span className="opacity-70">{sec.risks ? '▲' : '▼'}</span>
+                        </button>
+
+                        {sec.risks && (
+                          <div className="mt-4 space-y-3">
+                            {geneRisks.length === 0 ? (
+                              <p className="opacity-70 text-sm">No risks for this gene yet.</p>
+                            ) : (
+                              geneRisks.map((r) => {
+                                // ❌ DO NOT call initRiskDraft(r) here
+
+                                const d = riskDraft[r.id]
+
+                                return (
+                                  <div key={r.id} className="rounded-2xl border p-4 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <button
+                                        className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delrisk:${r.id}`])}
+                                        onClick={() => deleteRisk(r.id)}
+                                        disabled={!!busy[`delrisk:${r.id}`]}
                                       >
-                                        <option value="ANY">Any</option>
-                                        <option value="F">F</option>
-                                        <option value="M">M</option>
-                                      </select>
+                                        {busy[`delrisk:${r.id}`] ? 'Deleting…' : 'Delete risk'}
+                                      </button>
                                     </div>
 
-                                    <div className="space-y-1">
-                                      <label className="text-sm">Risk</label>
-                                      <textarea
-                                        className="w-full rounded-xl border p-3 min-h-[110px] bg-black text-white"
-                                        value={d.risk ?? ''}
-                                        onChange={(e) =>
-                                          setRiskDraft((p) => ({
-                                            ...p,
-                                            [r.id]: { ...(p[r.id] ?? d), risk: e.target.value },
-                                          }))
-                                        }
-                                      />
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                      <div className="space-y-1">
+                                        <label className="text-sm">Sex</label>
+                                        <select
+                                          className="w-full rounded-xl border p-3 bg-black text-white"
+                                          value={d?.sexUI ?? (r.sex === 'M' ? 'M' : r.sex === 'F' ? 'F' : 'ANY')}
+                                          onChange={(e) =>
+                                            setRiskDraft((prev) => ({
+                                              ...prev,
+                                              [r.id]: {
+                                                ...(prev[r.id] ?? {
+                                                  sexUI: (r.sex === 'M' ? 'M' : r.sex === 'F' ? 'F' : 'ANY') as any,
+                                                  risk: r.risk ?? '',
+                                                }),
+                                                sexUI: e.target.value as any,
+                                              },
+                                            }))
+                                          }
+                                        >
+                                          <option value="ANY">ANY</option>
+                                          <option value="F">F</option>
+                                          <option value="M">M</option>
+                                        </select>
+                                      </div>
+
+                                      <div className="space-y-1">
+                                        <label className="text-sm">Risk</label>
+                                        <textarea
+                                          className="w-full rounded-xl border p-3 min-h-[110px] bg-black text-white"
+                                          value={d?.risk ?? r.risk ?? ''}
+                                          onChange={(e) =>
+                                            setRiskDraft((p) => ({
+                                              ...p,
+                                              [r.id]: {
+                                                ...(p[r.id] ?? {
+                                                  sexUI: (r.sex === 'M' ? 'M' : r.sex === 'F' ? 'F' : 'ANY') as any,
+                                                  risk: r.risk ?? '',
+                                                }),
+                                                risk: e.target.value,
+                                              },
+                                            }))
+                                          }
+                                        />
+                                      </div>
                                     </div>
+
+                                    <button
+                                      className={btn('rounded-xl border px-4 py-3', busy[`risk:${r.id}`])}
+                                      onClick={() => saveRisk(r)}
+                                      disabled={!!busy[`risk:${r.id}`]}
+                                    >
+                                      {busy[`risk:${r.id}`] ? 'Saving…' : 'Save risk'}
+                                    </button>
                                   </div>
-
-                                  <button className={btn('rounded-xl border px-4 py-3', busy[`risk:${r.id}`])} onClick={() => saveRisk(r)} disabled={!!busy[`risk:${r.id}`]}>
-                                    {busy[`risk:${r.id}`] ? 'Saving…' : 'Save risk'}
-                                  </button>
-                                </div>
-                              )
-                            })
-                          )}
-                        </div>
-                      )}
-                    </div>
+                                )
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
                   </div>
                 )}
               </div>
