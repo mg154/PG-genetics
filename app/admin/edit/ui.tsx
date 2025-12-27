@@ -723,20 +723,6 @@ export default function EditPositionsClient() {
     }
   }
 
-  async function deleteClass(classId: string) {
-    setError(null)
-    setBusyKey(`delclass:${classId}`, true)
-    try {
-      const { error } = await supabase.from('recommendation_classes').delete().eq('id', classId)
-      if (error) throw error
-      await loadAll()
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to delete class (it may still be used).')
-    } finally {
-      setBusyKey(`delclass:${classId}`, false)
-    }
-  }
-
   async function saveClassName(c: RecClass, name: string) {
     setError(null)
     const nm = name.trim()
@@ -884,7 +870,7 @@ export default function EditPositionsClient() {
                       {sec.recs && (
                         (recsModeByGene[g.id] ?? 'normal') === 'normal' ? (
                           <div className="mt-4 space-y-4">
-                            
+
                             {/* Classes */}
                             <div className="rounded-2xl border p-4">
                               <h4 className="font-semibold">Recommendation classes (gene-specific)</h4>
@@ -908,13 +894,6 @@ export default function EditPositionsClient() {
                                             disabled={!!busy[`saveclass:${c.id}`]}
                                           >
                                             {busy[`saveclass:${c.id}`] ? 'Saving…' : 'Save name'}
-                                          </button>
-                                          <button
-                                            className={btn('rounded-xl border px-3 py-2 text-sm', busy[`delclass:${c.id}`])}
-                                            onClick={() => deleteClass(c.id)}
-                                            disabled={!!busy[`delclass:${c.id}`]}
-                                          >
-                                            {busy[`delclass:${c.id}`] ? 'Deleting…' : 'Delete class'}
                                           </button>
                                         </div>
                                       </div>
